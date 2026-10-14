@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#09090b">
+<title>Workspace</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,500;1,500&family=JetBrains+Mono&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<style>
+:root{--bg:#09090b;--sf:#18181b;--ln:#27272a;--tx:#e4e4e7;--mu:#71717a;--em:#34d399;--pu:#a78bfa;--pk:#f472b6}
+*{-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif}
+body{padding-top:env(safe-area-inset-top)}
+h1,h2,h3,.ser{font-family:Spectral,serif;font-style:italic;font-weight:500}
+.card{background:var(--sf);border:1px solid var(--ln);border-radius:18px;padding:14px}
+.btn{background:var(--sf);border:1px solid var(--ln);border-radius:12px;padding:8px 12px;font-size:14px}
+.btn.on,.chip.on{border-color:var(--em);color:var(--em);box-shadow:0 0 14px #34d39930}
+.btn.pri{background:var(--em);color:#04120c;border-color:var(--em);font-weight:600}
+.chip{border:1px solid var(--ln);border-radius:99px;padding:4px 11px;font-size:13px;color:var(--mu);white-space:nowrap}
+input,textarea,select{background:#0f0f12;border:1px solid var(--ln);border-radius:12px;padding:10px 12px;width:100%;color:var(--tx);outline:none;font-size:15px}
+input:focus,textarea:focus{border-color:var(--pu)}
+textarea{font-family:'JetBrains Mono',monospace;font-size:14px;line-height:1.55;resize:none}
+#nav{position:fixed;left:12px;right:12px;bottom:calc(10px + env(safe-area-inset-bottom));background:#18181bcc;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid var(--ln);border-radius:24px;display:flex;justify-content:space-around;padding:6px;z-index:20}
+#nav button{flex:1;padding:8px 0;border-radius:18px;font-size:11px;color:var(--mu);transition:all .2s}
+#nav button b{display:block;font-size:19px;font-weight:400}
+#nav button.on{color:var(--em);background:#34d39914}
+#sheet{position:fixed;inset:0;background:#000a;z-index:30;display:none;align-items:flex-end}
+#sheet.open{display:flex}
+#sheet>div{background:var(--bg);border:1px solid var(--ln);border-radius:26px 26px 0 0;width:100%;max-height:92%;overflow:auto;padding:16px 16px calc(20px + env(safe-area-inset-bottom));animation:up .22s ease-out}
+@keyframes up{from{transform:translateY(40px);opacity:0}}
+.md h1,.md h2,.md h3{margin:.6em 0 .3em}.md h1{font-size:1.5rem}.md h2{font-size:1.25rem}
+.md li{margin-left:1.1em;list-style:disc}.md code{font-family:'JetBrains Mono',monospace;background:#27272a;padding:1px 5px;border-radius:6px;font-size:.9em}
+.md pre{margin:.6em 0;border-radius:12px;overflow:auto}.md pre code{background:none;padding:12px;display:block}
+.wl{color:var(--pu);border-bottom:1px dashed var(--pu)}.tg{color:var(--em)}
+.dot{width:9px;height:9px;border-radius:99px;display:inline-block}
+.grp{color:var(--mu);margin:14px 2px 6px;display:flex;justify-content:space-between}
+.sc{overflow-x:auto;display:flex;gap:6px;padding-bottom:4px}
+canvas{width:100%;height:100%;display:block;touch-action:manipulation}
+</style>
+</head>
+<body>
+<main id="main" class="max-w-xl mx-auto px-4 pt-4" style="padding-bottom:110px"></main>
+<nav id="nav"></nav>
+<div id="sheet"><div id="sheetbody"></div></div>
+
+<script type="module">
+/* ===== CONFIG: cole aqui o objeto do seu projeto Firebase (Configurações > Seus apps) ===== */
+const FIREBASE_CONFIG = null; // ex.: { apiKey:"...", authDomain:"...", projectId:"...", appId:"..." }
+
+/* ===== Utilitários ===== */
+const $ = (s, r = document) => r.querySelector(s);
+const uid = () => Math.random().toString(36).slice(2, 9);
+const ymd = d => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+const today = () => ymd(new Date());
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const extractTags = t => [...new Set((t.match(/(^|\s)#([\p{L}\d_-]+)/gu) || []).map(s => s.trim().slice(1).toLowerCase()))];
+const extractLinks = t => [...t.matchAll(/\[\[([^\]]+)\]\]/g)].map(m => m[1].trim());
+const fmtDate = s => new Date(s + 'T12:00').toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' });
+const download = (name, text, type) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click(); };
+
+/* ===== Camada de dados: LocalStorage primeiro, Firestore em segundo plano ===== */
+const COLS = ['diarios', 'notas', 'tarefas', 'tags'];
+const Cloud = {
+  db: null, fs: null, status: 'Somente local',
+  async init() {
+    if (!FIREBASE_CONFIG) return;
+    try {
+      const A = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js');
+      const F = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js');
+      this.fs = F;
+      this.db = F.initializeFirestore(A.initializeApp(FIREBASE_CONFIG), { localCache: F.persistentLocalCache() });
+      COLS.forEach(c => {
+        let first = true;
+        F.onSnapshot(F.collection(this.db, c), snap => {
+          if (first) { // primeira carga: envia o que é só local ou mais novo
+            first = false;
+            const m = new Map(snap.docs.map(d => [d.id, d.data()]));
+            Store.d[c].forEach(it => { const r = m.get(it.id); if (!r || (it.updatedAt || 0) > (r.updatedAt || 0)) this.set(c, it); });
+          }
+          let ch = false;
+          snap.docChanges().forEach(x => {
+            const r = x.doc.data(), a = Store.d[c], i = a.findIndex(y => y.id === r.id);
+            if (x.type === 'removed') { if (i >= 0) { a.splice(i, 1); ch = true; } }
+            else if (i < 0) { a.push(r); ch = true; }
+            else if ((r.updatedAt || 0) > (a[i].updatedAt || 0)) { a[i] = r; ch = true; }
+          });
+          if (ch) { Store.save(); Store.emit(); }
+        });
+      });
+      this.status = 'Sincronizado com Firebase';
+    } catch (e) { console.warn(e); this.status = 'Falha no Firebase (modo local)'; }
+    Store.emit();
+  },
+  set(c, it) { this.db && this.fs.setDoc(this.fs.doc(this.db, c, it.id), it).catch(() => {}); },
+  del(c, id) { this.db && this.fs.deleteDoc(this.fs.doc(this.db, c, id)).catch(() => {}); }
+};
+const Store = {
+  d: JSON.parse(localStorage.getItem('ws_v1') || 'null') || { diarios: [], notas: [], tarefas: [], tags: [] },
+  subs: [],
+  save() { localStorage.setItem('ws_v1', JSON.stringify(this.d)); },
+  on(f) { this.subs.push(f); }, emit() { this.subs.forEach(f => f()); },
+  get(c, id) { return this.d[c].find(x => x.id === id); },
+  put(c, it, quiet) {
+    it.updatedAt = Date.now();
+    const a = this.d[c], i = a.findIndex(x => x.id === it.id);
+    i < 0 ? a.push(it) : (a[i] = it);
+    if (c === 'notas' || c === 'diarios') this.rebuildTags();
+    this.save(); Cloud.set(c, it); if (!quiet) this.emit();
+  },
+  del(c, id) {
+    this.d[c] = this.d[c].filter(x => x.id !== id);
+    if (c === 'notas' || c === 'diarios') this.rebuildTags();
+    this.save(); Cloud.del(c, id); this.emit();
+  },
+  rebuildTags() {
+    const n = {}; [...this.d.notas, ...this.d.diarios].forEach(x => (x.tags || []).forEach(t => n[t] = (n[t] || 0) + 1));
+    const old = Object.fromEntries(this.d.tags.map(t => [t.id, t.count]));
+    this.d.tags = Object.entries(n).map(([id, count]) => ({ id, count, updatedAt: Date.now() }));
+    this.d.tags.forEach(t => old[t.id] !== t.count && Cloud.set('tags', t));
+    Object.keys(old).forEach(id => !n[id] && Cloud.del('tags', id));
+  }
+};
+const D = Store.d;
+
+/* ===== Markdown leve + destaque de código ===== */
+const hl = (c, l) => window.hljs && l && hljs.getLanguage(l) ? hljs.highlight(c, { language: l }).value : esc(c);
+function md(src) {
+  const blocks = [];
+  let s = (src || '').replace(/```(\w*)\n([\s\S]*?)```/g, (_, l, c) => { blocks.push(`<pre><code class="hljs">${hl(c, l)}</code></pre>`); return `\u0000${blocks.length - 1}\u0000`; });
+  s = esc(s)
+    .replace(/^### (.*)$/gm, '<h3>$1</h3>').replace(/^## (.*)$/gm, '<h2>$1</h2>').replace(/^# (.*)$/gm, '<h1>$1</h1>')
+    .replace(/^[-*] (.*)$/gm, '<li>$1</li>')
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\*(.+?)\*/g, '<i>$1</i>').replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\[\[([^\]]+)\]\]/g, '<a class="wl" data-note="$1">$1</a>')
+    .replace(/(^|\s)#([\p{L}\d_-]+)/gu, '$1<span class="tg">#$2</span>')
+    .replace(/\n/g, '<br>');
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[i]);
+}
+
+/* ===== Estado de UI e registro de módulos (ponto de extensão) ===== */
+const ui = { tab: 'hoje', date: today(), tag: null, q: '', tview: 'lista' };
+const Modules = [];
+const registerModule = m => Modules.push(m); // {id,nome,icon,nav,view(),mount?(),soon?}
+
+/* --- Módulo: Diário --- */
+const HABITOS = ['Treino', 'Leitura', 'Água', 'Sono ok', 'Estudo', 'Meditação'];
+const diaBase = () => Store.get('diarios', ui.date) || { id: ui.date, humor: 0, energia: 0, prod: 0, habitos: [], texto: '', tags: [] };
+const diaPut = (p, quiet) => { const e = { ...diaBase(), ...p }; e.tags = extractTags(e.texto); Store.put('diarios', e, quiet); };
+const scale = (k, v) => [1, 2, 3, 4, 5].map(n => `<button class="btn ${v === n ? 'on' : ''}" data-act="${k}" data-v="${n}" style="flex:1">${n}</button>`).join('');
+registerModule({
+  id: 'hoje', nome: 'Hoje', icon: '☾', nav: true,
+  view() {
+    const e = diaBase(), d = ui.date;
+    const notas = D.notas.filter(n => n.created === d), tarefas = D.tarefas.filter(t => t.created === d || t.venc === d);
+    return `<div class="flex items-center justify-between mb-3">
+      <button class="btn" data-act="dia" data-v="-1">‹</button>
+      <div class="text-center"><h1 class="text-2xl capitalize">${fmtDate(d)}</h1>${d !== today() ? `<button class="text-xs" style="color:var(--pu)" data-act="dia" data-v="0">voltar para hoje</button>` : ''}</div>
+      <button class="btn" data-act="dia" data-v="1">›</button></div>
+      <div class="card space-y-3">
+        <div><div class="text-xs mb-1" style="color:var(--mu)">Humor</div><div class="flex gap-1">${scale('humor', e.humor)}</div></div>
+        <div><div class="text-xs mb-1" style="color:var(--mu)">Energia</div><div class="flex gap-1">${scale('energia', e.energia)}</div></div>
+        <div><div class="text-xs mb-1" style="color:var(--mu)">Produtividade: <span id="pv">${e.prod}</span>%</div><input id="dprod" type="range" min="0" max="100" step="5" value="${e.prod}" style="padding:0;accent-color:#34d399"></div>
+        <div class="sc">${HABITOS.map(h => `<button class="chip ${e.habitos.includes(h) ? 'on' : ''}" data-act="habito" data-v="${h}">${h}</button>`).join('')}</div>
+      </div>
+      <div class="card mt-3"><div class="flex justify-between mb-2"><h3>Diário</h3><button class="chip" data-act="dprev">${ui.dprev ? 'Editar' : 'Prévia'}</button></div>
+        ${ui.dprev ? `<div class="md">${md(e.texto) || '<span style="color:var(--mu)">Nada escrito ainda.</span>'}</div>` : `<textarea id="dtxt" rows="9" placeholder="Escreva livremente. Markdown, #tags e [[links]] funcionam aqui.">${esc(e.texto)}</textarea>`}</div>
+      <div class="card mt-3"><h3 class="mb-2">Criado neste dia</h3>
+        ${notas.map(n => `<div class="py-1" data-act="opennote" data-v="${n.id}" style="color:var(--em)">✎ ${esc(n.titulo)}</div>`).join('')}
+        ${tarefas.map(t => `<div class="py-1" style="color:${t.feito ? 'var(--mu)' : 'var(--tx)'}">${t.feito ? '✓' : '○'} ${esc(t.titulo)}</div>`).join('')}
+        ${notas.length + tarefas.length ? '' : '<div style="color:var(--mu)">Nenhuma nota ou tarefa nesta data.</div>'}</div>`;
+  }
+});
+
+/* --- Módulo: Notas --- */
+registerModule({
+  id: 'notas', nome: 'Notas', icon: '✎', nav: true,
+  view() {
+    const q = ui.q.toLowerCase();
+    const list = D.notas.filter(n => (!ui.tag || (n.tags || []).includes(ui.tag)) && (!q || (n.titulo + n.texto + (n.materia || '')).toLowerCase().includes(q))).sort((a, b) => b.updatedAt - a.updatedAt);
+    return `<h1 class="text-2xl mb-3">Notas</h1>
+      <input id="q" placeholder="Buscar por título, texto ou matéria" value="${esc(ui.q)}">
+      <div class="sc mt-2">${D.tags.sort((a, b) => b.count - a.count).map(t => `<button class="chip ${ui.tag === t.id ? 'on' : ''}" data-act="tag" data-v="${t.id}">#${esc(t.id)} ${t.count}</button>`).join('')}</div>
+      <div class="space-y-2 mt-3">${list.map(n => `<div class="card" data-act="opennote" data-v="${n.id}"><div class="flex justify-between"><b>${esc(n.titulo)}</b><span class="text-xs" style="color:var(--pu)">${esc(n.materia || '')}</span></div>
+        <div class="text-sm mt-1" style="color:var(--mu)">${esc((n.texto || '').replace(/[#*`\[\]]/g, '').slice(0, 110))}</div></div>`).join('') || '<div class="card" style="color:var(--mu)">Nenhuma nota. Toque em + para criar a primeira.</div>'}</div>
+      <button class="btn pri" data-act="newnote" style="position:fixed;right:20px;bottom:calc(92px + env(safe-area-inset-bottom));width:54px;height:54px;border-radius:99px;font-size:26px;z-index:15">+</button>`;
+  }
+});
+function openNote(n) {
+  n = n || { id: uid(), titulo: '', materia: '', texto: '', created: today() };
+  const back = D.notas.filter(x => x.id !== n.id && n.titulo && (x.links || []).some(l => l.toLowerCase() === n.titulo.toLowerCase()));
+  $('#sheetbody').innerHTML = `<div class="flex justify-between items-center mb-3"><h2 class="text-xl">${Store.get('notas', n.id) ? 'Editar nota' : 'Nova nota'}</h2><button class="btn" data-act="close">Fechar</button></div>
+    <div class="space-y-2"><input id="nt" placeholder="Título" value="${esc(n.titulo)}"><input id="nm" placeholder="Matéria ou projeto" value="${esc(n.materia)}">
+    <div class="flex justify-end"><button class="chip" id="np">Prévia</button></div>
+    <textarea id="nx" rows="12" placeholder="Texto, #tags, [[outra nota]] e blocos \`\`\`js">${esc(n.texto)}</textarea><div id="nv" class="md card" style="display:none"></div></div>
+    ${back.length ? `<h3 class="mt-4 mb-1">Mencionada em</h3>${back.map(b => `<div class="py-1" style="color:var(--pu)" data-act="opennote" data-v="${b.id}">↩ ${esc(b.titulo)}</div>`).join('')}` : ''}
+    <div class="flex gap-2 mt-4"><button class="btn pri flex-1" data-act="savenote" data-v="${n.id}" data-c="${n.created}">Salvar nota</button>${Store.get('notas', n.id) ? `<button class="btn" data-act="delnote" data-v="${n.id}" style="color:var(--pk)">Excluir</button>` : ''}</div>`;
+  $('#sheet').classList.add('open');
+  $('#np').onclick = () => { const v = $('#nv'), t = $('#nx'), on = v.style.display === 'none'; v.innerHTML = md(t.value); v.style.display = on ? 'block' : 'none'; t.style.display = on ? 'none' : 'block'; $('#np').textContent = on ? 'Editar' : 'Prévia'; };
+}
+const openNoteByTitle = t => { const n = D.notas.find(x => x.titulo.toLowerCase() === t.toLowerCase()); openNote(n || { id: uid(), titulo: t, materia: '', texto: '', created: today() }); };
+
+/* --- Módulo: Tarefas --- */
+const PR = { alta: 0, media: 1, baixa: 2 }, PC = { alta: '#f472b6', media: '#a78bfa', baixa: '#52525b' };
+const card = t => `<div class="card mb-2" style="${t.feito ? 'opacity:.55' : ''}"><div class="flex items-center gap-3">
+  <button class="btn" data-act="toggle" data-v="${t.id}" style="width:34px;height:34px;padding:0;${t.feito ? 'color:var(--em)' : ''}">${t.feito ? '✓' : ''}</button>
+  <div class="flex-1"><div class="${t.feito ? 'line-through' : ''}">${esc(t.titulo)}</div>
+  <div class="text-xs mt-0.5" style="color:var(--mu)"><span class="dot" style="background:${PC[t.prio]}"></span> ${t.prio}${t.venc ? ' · ' + t.venc.split('-').reverse().slice(0, 2).join('/') : ''}${t.projeto ? ' · ' + esc(t.projeto) : ''}</div></div>
+  <button data-act="deltask" data-v="${t.id}" style="color:var(--mu)">✕</button></div>
+  ${(t.subs || []).map((s, i) => `<div class="flex gap-2 mt-2 ml-11 text-sm" data-act="subtoggle" data-v="${t.id}" data-i="${i}" style="color:${s.done ? 'var(--mu)' : 'var(--tx)'}"><span>${s.done ? '☑' : '☐'}</span>${esc(s.t)}</div>`).join('')}
+  <input class="mt-2 text-sm" data-sub="${t.id}" placeholder="+ subtarefa" style="padding:6px 10px"></div>`;
+registerModule({
+  id: 'tarefas', nome: 'Tarefas', icon: '✓', nav: true,
+  view() {
+    const T = D.tarefas, done = T.filter(t => t.feito).length, pct = T.length ? Math.round(done / T.length * 100) : 0;
+    let l = [...T].sort((a, b) => a.feito - b.feito || PR[a.prio] - PR[b.prio] || (a.venc || '9').localeCompare(b.venc || '9')), body;
+    if (ui.tview === 'projeto') { const g = {}; l.forEach(t => (g[t.projeto || 'Sem projeto'] ??= []).push(t)); body = Object.entries(g).map(([p, a]) => `<h3 class="grp"><span>${esc(p)}</span><span>${a.filter(x => x.feito).length}/${a.length}</span></h3>${a.map(card).join('')}`).join(''); }
+    else if (ui.tview === 'dia') { const d = today(); body = l.filter(t => t.venc === d || (t.venc && t.venc < d && !t.feito)).map(card).join('') || '<div class="card" style="color:var(--mu)">Nada vence hoje.</div>'; }
+    else body = l.map(card).join('') || '<div class="card" style="color:var(--mu)">Sem tarefas. Adicione a primeira acima.</div>';
+    return `<h1 class="text-2xl mb-2">Tarefas</h1>
+      <div class="card mb-3"><div class="flex justify-between text-sm mb-2"><span>${done} de ${T.length} concluídas</span><span style="color:var(--em)">${pct}%</span></div>
+        <div style="height:6px;background:var(--ln);border-radius:9px"><div style="height:6px;width:${pct}%;background:linear-gradient(90deg,var(--pu),var(--em));border-radius:9px;transition:width .4s"></div></div></div>
+      <form id="tf" class="card space-y-2 mb-3"><input name="titulo" placeholder="Nova tarefa" required>
+        <div class="flex gap-2"><select name="prio"><option value="media">Média</option><option value="alta">Alta</option><option value="baixa">Baixa</option></select><input name="venc" type="date"></div>
+        <div class="flex gap-2"><input name="projeto" placeholder="Projeto ou matéria"><button class="btn pri">Adicionar</button></div></form>
+      <div class="flex gap-2 mb-2">${[['lista', 'Lista'], ['projeto', 'Projeto'], ['dia', 'Hoje']].map(([k, n]) => `<button class="chip ${ui.tview === k ? 'on' : ''}" data-act="tview" data-v="${k}">${n}</button>`).join('')}</div>${body}`;
+  }
+});
+
+/* --- Módulo: Grafo --- */
+let G = null;
+registerModule({
+  id: 'grafo', nome: 'Grafo', icon: '◎', nav: true,
+  view() { return `<div style="position:fixed;inset:0;top:env(safe-area-inset-top);bottom:0"><canvas id="gc"></canvas></div>
+    <div class="flex gap-3 text-xs" style="position:fixed;top:calc(12px + env(safe-area-inset-top));left:16px;z-index:5;color:var(--mu)"><span style="color:var(--pu)">● diário</span><span style="color:var(--em)">● nota</span><span style="color:var(--pk)">● projeto</span><span>● tag</span></div>`; },
+  mount() {
+    const N = new Map(), E = [], node = (id, label, color, r) => N.has(id) || N.set(id, { id, label, color, r, x: 0, y: 0, vx: 0, vy: 0 });
+    D.diarios.forEach(d => node('d:' + d.id, d.id.slice(5).split('-').reverse().join('/'), '#a78bfa', 7));
+    D.notas.forEach(n => {
+      node('n:' + n.id, n.titulo, '#34d399', 9);
+      if (D.diarios.some(d => d.id === n.created)) E.push(['n:' + n.id, 'd:' + n.created]);
+      (n.links || []).forEach(l => { const t = D.notas.find(x => x.titulo.toLowerCase() === l.toLowerCase()); t && E.push(['n:' + n.id, 'n:' + t.id]); });
+      if (n.materia) { node('p:' + n.materia, n.materia, '#f472b6', 11); E.push(['n:' + n.id, 'p:' + n.materia]); }
+    });
+    D.tarefas.forEach(t => t.projeto && node('p:' + t.projeto, t.projeto, '#f472b6', 11));
+    [...D.notas, ...D.diarios].forEach(x => (x.tags || []).forEach(t => { node('t:' + t, '#' + t, '#52525b', 5); E.push([(x.titulo !== undefined ? 'n:' : 'd:') + x.id, 't:' + t]); }));
+    const c = $('#gc'), W = c.clientWidth, H = c.clientHeight, dpr = devicePixelRatio || 1; c.width = W * dpr; c.height = H * dpr;
+    const x = c.getContext('2d'); x.scale(dpr, dpr);
+    const nodes = [...N.values()]; nodes.forEach((n, i) => { const a = i / nodes.length * 6.28; n.x = W / 2 + Math.cos(a) * 90; n.y = H / 2 + Math.sin(a) * 90; });
+    const edges = E.filter(([a, b]) => N.has(a) && N.has(b)).map(([a, b]) => [N.get(a), N.get(b)]);
+    let k = 0; G = { stop: false };
+    const step = () => {
+      if (G.stop) return; const cool = Math.max(0.03, 1 - k / 260); k++;
+      nodes.forEach(a => { a.vx += (W / 2 - a.x) * .004; a.vy += (H / 2 - a.y) * .004;
+        nodes.forEach(b => { if (a === b) return; let dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy + 40; const f = 1800 / d2; a.vx += dx * f / Math.sqrt(d2); a.vy += dy * f / Math.sqrt(d2); }); });
+      edges.forEach(([a, b]) => { const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1, f = (d - 90) * .02; a.vx += dx / d * f; a.vy += dy / d * f; b.vx -= dx / d * f; b.vy -= dy / d * f; });
+      nodes.forEach(n => { n.x += n.vx * cool; n.y += n.vy * cool; n.vx *= .8; n.vy *= .8; n.x = Math.min(W - 20, Math.max(20, n.x)); n.y = Math.min(H - 100, Math.max(50, n.y)); });
+      x.clearRect(0, 0, W, H); x.lineWidth = 1; x.strokeStyle = '#3f3f46';
+      edges.forEach(([a, b]) => { x.beginPath(); x.moveTo(a.x, a.y); x.lineTo(b.x, b.y); x.stroke(); });
+      x.font = '11px system-ui'; x.textAlign = 'center';
+      nodes.forEach(n => { x.shadowColor = n.color; x.shadowBlur = 12; x.fillStyle = n.color; x.beginPath(); x.arc(n.x, n.y, n.r, 0, 6.28); x.fill(); x.shadowBlur = 0; x.fillStyle = '#a1a1aa'; x.fillText(n.label.slice(0, 18), n.x, n.y + n.r + 12); });
+      requestAnimationFrame(step);
+    };
+    if (!nodes.length) { x.fillStyle = '#71717a'; x.font = '15px system-ui'; x.textAlign = 'center'; x.fillText('Crie notas e entradas de diário para ver a rede.', W / 2, H / 2); return; }
+    step();
+    c.onclick = e => { const r = c.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+      const h = nodes.find(n => Math.hypot(n.x - px, n.y - py) < n.r + 12); if (!h) return;
+      const [t, id] = [h.id[0], h.id.slice(2)];
+      if (t === 'n') openNote(Store.get('notas', id));
+      else if (t === 'd') { ui.date = id; go('hoje'); }
+      else if (t === 'p') { ui.tview = 'projeto'; go('tarefas'); }
+      else { ui.tag = id; go('notas'); } };
+  }
+});
+
+/* --- Módulo: Mais (exportação e módulos futuros) --- */
+registerModule({
+  id: 'mais', nome: 'Mais', icon: '⋯', nav: true,
+  view() {
+    return `<h1 class="text-2xl mb-3">Mais</h1>
+      <div class="card mb-3"><h3>Dados</h3><div class="text-sm my-2" style="color:var(--mu)">${esc(Cloud.status)}</div>
+        <div class="flex gap-2"><button class="btn flex-1" data-act="exjson">Exportar JSON</button><button class="btn flex-1" data-act="exmd">Exportar Markdown</button></div></div>
+      <div class="card"><h3 class="mb-2">Em breve</h3>${Modules.filter(m => !m.nav).map(m => `<div class="py-2 flex justify-between" style="border-top:1px solid var(--ln)"><span>${m.icon} ${m.nome}</span><span style="color:var(--mu)">${m.soon || ''}</span></div>`).join('')}</div>`;
+  }
+});
+/* Pontos de extensão: basta registrar. Quando implementar, troque nav:false por true e adicione view(). */
+registerModule({ id: 'flash', nome: 'Flashcards', icon: '🂠', nav: false, soon: 'repetição espaçada' });
+registerModule({ id: 'ia', nome: 'Assistente de IA', icon: '✦', nav: false, soon: 'resumir notas' });
+registerModule({ id: 'foco', nome: 'Ruído branco', icon: '♪', nav: false, soon: 'áudio de foco' });
+
+/* ===== Navegação e renderização ===== */
+function go(id) { ui.tab = id; render(); scrollTo(0, 0); }
+function render() {
+  if (G) G.stop = true;
+  const m = Modules.find(x => x.id === ui.tab);
+  $('#main').innerHTML = m.view();
+  $('#nav').innerHTML = Modules.filter(x => x.nav).map(x => `<button class="${x.id === ui.tab ? 'on' : ''}" data-act="tab" data-v="${x.id}"><b>${x.icon}</b>${x.nome}</button>`).join('');
+  m.mount && m.mount();
+}
+Store.on(() => { if (!$('#sheet').classList.contains('open') && !document.activeElement?.matches?.('input,textarea')) render(); });
+
+const A = {
+  tab: v => go(v),
+  dia: v => { const d = new Date(ui.date + 'T12:00'); ui.date = v === '0' ? today() : ymd(new Date(d.getTime() + +v * 864e5)); render(); },
+  humor: v => { diaPut({ humor: +v }); }, energia: v => { diaPut({ energia: +v }); },
+  habito: v => { const h = diaBase().habitos; diaPut({ habitos: h.includes(v) ? h.filter(x => x !== v) : [...h, v] }); },
+  dprev: () => { ui.dprev = !ui.dprev; render(); },
+  tag: v => { ui.tag = ui.tag === v ? null : v; render(); },
+  newnote: () => openNote(), opennote: v => openNote(Store.get('notas', v)),
+  close: () => $('#sheet').classList.remove('open'),
+  savenote: (v, el) => {
+    const texto = $('#nx').value, titulo = $('#nt').value.trim() || 'Sem título';
+    Store.put('notas', { id: v, titulo, materia: $('#nm').value.trim(), texto, tags: extractTags(texto), links: extractLinks(texto), created: el.dataset.c }, true);
+    A.close(); Store.emit();
+  },
+  delnote: v => { if (confirm('Excluir esta nota?')) { A.close(); Store.del('notas', v); } },
+  tview: v => { ui.tview = v; render(); },
+  toggle: v => { const t = Store.get('tarefas', v); Store.put('tarefas', { ...t, feito: !t.feito }); },
+  subtoggle: (v, el) => { const t = Store.get('tarefas', v), s = t.subs.map((x, i) => i == el.dataset.i ? { ...x, done: !x.done } : x); Store.put('tarefas', { ...t, subs: s }); },
+  deltask: v => Store.del('tarefas', v),
+  exjson: () => download('workspace.json', JSON.stringify({ diarios: D.diarios, notas: D.notas, tarefas: D.tarefas }, null, 2), 'application/json'),
+  exmd: () => download('workspace.md', [...D.notas.map(n => `# ${n.titulo}\n\n${n.texto}\n`), ...D.diarios.map(d => `# Diário ${d.id}\n\nHumor ${d.humor}/5 · Energia ${d.energia}/5\n\n${d.texto}\n`)].join('\n---\n\n'), 'text/markdown')
+};
+document.addEventListener('click', e => {
+  const wl = e.target.closest('[data-note]'); if (wl) return openNoteByTitle(wl.dataset.note);
+  const el = e.target.closest('[data-act]'); if (el && A[el.dataset.act]) A[el.dataset.act](el.dataset.v, el);
+});
+document.addEventListener('input', e => {
+  if (e.target.id === 'dtxt') diaPut({ texto: e.target.value }, true);
+  if (e.target.id === 'dprod') { $('#pv').textContent = e.target.value; diaPut({ prod: +e.target.value }, true); }
+  if (e.target.id === 'q') { ui.q = e.target.value; const p = e.target.selectionStart; render(); const q = $('#q'); q.focus(); q.setSelectionRange(p, p); }
+});
+document.addEventListener('submit', e => {
+  if (e.target.id !== 'tf') return; e.preventDefault();
+  const f = Object.fromEntries(new FormData(e.target));
+  Store.put('tarefas', { id: uid(), titulo: f.titulo.trim(), prio: f.prio, venc: f.venc, projeto: f.projeto.trim(), feito: false, subs: [], created: today() });
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || !e.target.dataset.sub || !e.target.value.trim()) return;
+  const t = Store.get('tarefas', e.target.dataset.sub); Store.put('tarefas', { ...t, subs: [...(t.subs || []), { t: e.target.value.trim(), done: false }] });
+});
+$('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') A.close(); });
+
+/* PWA: manifest.json + sw.js na mesma pasta do index.html */
+if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
+
+render();
+Cloud.init();
+</script>
+</body>
+</html>
